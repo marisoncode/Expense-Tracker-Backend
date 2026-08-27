@@ -15,6 +15,10 @@ elif raw_db_url.startswith("postgres://"):
 else:
     DATABASE_URL = raw_db_url
 
+# Clean up any parameters not supported directly in asyncpg DSN
+if "postgresql+asyncpg" in DATABASE_URL and "&channel_binding=" in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.split("&channel_binding=")[0]
+
 connect_args = {}
 if "sqlite" in DATABASE_URL:
     connect_args["check_same_thread"] = False
