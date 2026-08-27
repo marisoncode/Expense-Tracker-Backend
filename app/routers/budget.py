@@ -10,6 +10,19 @@ router = APIRouter(prefix="/api/v1/budget", tags=["budget"])
 
 @router.put("/update")
 async def update_budget(budget_update: schemas.BudgetUpdate, db: AsyncSession = Depends(get_db)):
+    # Ensure user exists for foreign key constraint
+    user_res = await db.execute(select(models.User).where(models.User.id == budget_update.user_id))
+    if not user_res.scalar_one_or_none():
+        user = models.User(
+            id=budget_update.user_id,
+            name="Default User",
+            phone_number="0000000000",
+            monthly_budget=0.0,
+            theme_preference=models.ThemePreference.light
+        )
+        db.add(user)
+        await db.commit()
+
     result = await db.execute(
         select(models.MonthlyBudget).where(
             models.MonthlyBudget.user_id == budget_update.user_id,

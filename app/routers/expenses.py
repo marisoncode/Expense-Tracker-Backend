@@ -23,6 +23,19 @@ router = APIRouter(prefix="/api/v1/expenses", tags=["expenses"])
 
 @router.post("", response_model=schemas.ExpenseLog)
 async def create_expense(expense: schemas.ExpenseLogCreate, db: AsyncSession = Depends(get_db)):
+    # Ensure user exists to satisfy PostgreSQL foreign key constraint
+    user_res = await db.execute(select(models.User).where(models.User.id == expense.user_id))
+    if not user_res.scalar_one_or_none():
+        user = models.User(
+            id=expense.user_id,
+            name="Default User",
+            phone_number="0000000000",
+            monthly_budget=0.0,
+            theme_preference=models.ThemePreference.light
+        )
+        db.add(user)
+        await db.commit()
+
     db_expense = models.ExpenseLog(**expense.model_dump())
     db.add(db_expense)
     await db.commit()
