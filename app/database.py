@@ -32,10 +32,24 @@ elif "sqlite" in raw_db_url:
 else:
     DATABASE_URL = raw_db_url
 
+engine_kwargs = {
+    "echo": False,
+    "connect_args": connect_args,
+}
+
+# PostgreSQL connection pool tuning for cloud/serverless DBs (Neon/Supabase)
+if "postgresql" in DATABASE_URL:
+    engine_kwargs.update({
+        "pool_pre_ping": True,     # Test connection liveness to prevent dead socket hangs
+        "pool_recycle": 300,       # Recycle connections every 5 mins to stay ahead of server timeouts
+        "pool_size": 10,           # Pre-warmed persistent connection pool
+        "max_overflow": 20,        # Allow burst concurrency without blocking
+        "pool_timeout": 30         # 30-second timeout on waiting for connections
+    })
+
 engine = create_async_engine(
     DATABASE_URL, 
-    echo=False,
-    connect_args=connect_args
+    **engine_kwargs
 )
 AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False

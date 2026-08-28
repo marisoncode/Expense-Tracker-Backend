@@ -115,3 +115,11 @@ class DailySpendingOverview(BaseModel):
     month: str
     daily_totals: Dict[str, float] # { "YYYY-MM-DD": total_spent }
     total_month_spent: float
+
+# --- Consolidated Dashboard Schema ---
+class DashboardOverview(BaseModel):
+    budget: BudgetSummary
+    stats: MonthlyStats
+    categories: List[CategoryBreakdownItem]
+    recent_expenses: List[ExpenseLog]
+
