@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, Enum, Index
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import enum
@@ -24,7 +24,7 @@ class ExpenseLog(Base):
     __tablename__ = "expense_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
     date = Column(Date, index=True)
     amount = Column(Float, nullable=False)
     category = Column(String, index=True, nullable=False)
@@ -34,22 +34,12 @@ class ExpenseLog(Base):
 
     user = relationship("User", back_populates="expense_logs")
 
-    __table_args__ = (
-        Index("ix_expense_logs_user_date", "user_id", "date"),
-        Index("ix_expense_logs_user_category", "user_id", "category"),
-    )
-
 class MonthlyBudget(Base):
     __tablename__ = "monthly_budgets"
     
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
     month = Column(String, index=True) # Format: YYYY-MM
     amount = Column(Float, default=0.0)
 
     user = relationship("User", back_populates="monthly_budgets")
-
-    __table_args__ = (
-        Index("ix_monthly_budgets_user_month", "user_id", "month"),
-    )
-
