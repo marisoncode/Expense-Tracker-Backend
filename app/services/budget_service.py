@@ -1,48 +1,31 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, extract, desc, asc
-from sqlalchemy import func, desc, asc
 from typing import Dict, Any, List, Optional
 import calendar
 from datetime import date, timedelta
 import app.models as models
 
-def get_month_date_range(year: int, month: int) -> tuple[date, date]:
-    """Returns the start and end dates for a given month."""
-    num_days = calendar.monthrange(year, month)[1]
-    return date(year, month, 1), date(year, month, num_days)
-
-def get_year_date_range(year: int) -> tuple[date, date]:
-    """Returns the start and end dates for a given year."""
-    return date(year, 1, 1), date(year, 12, 31)
-
 async def calculate_budget_summary(user_id: int, year: int, month: int, db: AsyncSession) -> Dict[str, Any]:
     month_str = f"{year}-{month:02d}"
-    start_date, end_date = get_month_date_range(year, month)
     
     # Get monthly budget for this specific month ONLY - strict per-month budget
-    # Get monthly budget for this specific month ONLY - uses (user_id, month) index
     result_budget = await db.execute(
         select(models.MonthlyBudget).where(
-        select(models.MonthlyBudget.amount).where(
             models.MonthlyBudget.user_id == user_id,
             models.MonthlyBudget.month == month_str
         )
     )
     monthly_budget_record = result_budget.scalars().first()
     monthly_budget = monthly_budget_record.amount if monthly_budget_record else 0.0
-    monthly_budget = result_budget.scalar_one_or_none() or 0.0
     
     # Get total spent for the month
-    # Get total spent for the month - uses (user_id, date) index range scan
     result_spent = await db.execute(
         select(func.sum(models.ExpenseLog.amount))
         .where(
             models.ExpenseLog.user_id == user_id,
             extract('year', models.ExpenseLog.date) == year,
             extract('month', models.ExpenseLog.date) == month
-            models.ExpenseLog.date >= start_date,
-            models.ExpenseLog.date <= end_date
         )
     )
     total_spent = float(result_spent.scalar() or 0.0)
@@ -83,15 +66,11 @@ async def calculate_category_breakdown(
         query = query.where(models.ExpenseLog.date >= start_date, models.ExpenseLog.date <= end_date)
     elif timeframe == "year" and year:
         query = query.where(extract('year', models.ExpenseLog.date) == year)
-        y_start, y_end = get_year_date_range(year)
-        query = query.where(models.ExpenseLog.date >= y_start, models.ExpenseLog.date <= y_end)
     elif timeframe == "month" and year and month:
         query = query.where(
             extract('year', models.ExpenseLog.date) == year,
             extract('month', models.ExpenseLog.date) == month
         )
-        m_start, m_end = get_month_date_range(year, month)
-        query = query.where(models.ExpenseLog.date >= m_start, models.ExpenseLog.date <= m_end)
 
     query = query.group_by(models.ExpenseLog.category).order_by(desc("total"))
     result = await db.execute(query)
@@ -125,14 +104,11 @@ async def calculate_trend_analytics(
             month = date.today().month
         
         num_days = calendar.monthrange(year, month)[1]
-        m_start, m_end = get_month_date_range(year, month)
-        num_days = m_end.day
         month_name = calendar.month_name[month]
         
         result = await db.execute(
             select(
                 extract('day', models.ExpenseLog.date).label("d"),
-                models.ExpenseLog.date,
                 func.sum(models.ExpenseLog.amount).label("total"),
                 func.count(models.ExpenseLog.id).label("count")
             )
@@ -140,14 +116,10 @@ async def calculate_trend_analytics(
                 models.ExpenseLog.user_id == user_id,
                 extract('year', models.ExpenseLog.date) == year,
                 extract('month', models.ExpenseLog.date) == month
-                models.ExpenseLog.date >= m_start,
-                models.ExpenseLog.date <= m_end
             )
             .group_by(extract('day', models.ExpenseLog.date))
-            .group_by(models.ExpenseLog.date)
         )
         day_rows = {int(r.d): {"total": float(r.total), "count": int(r.count)} for r in result.all()}
-        day_rows = {r.date.day: {"total": float(r.total), "count": int(r.count)} for r in result.all()}
         
         points = []
         total_period = 0.0
@@ -170,39 +142,25 @@ async def calculate_trend_analytics(
 
     elif timeframe == "month":
         # Month-wise trend for the given year (Jan..Dec)
-        y_start, y_end = get_year_date_range(year)
-        
-        # Optimized month grouping with range filter
         result = await db.execute(
             select(
                 extract('month', models.ExpenseLog.date).label("m"),
-                models.ExpenseLog.date,
                 func.sum(models.ExpenseLog.amount).label("total"),
                 func.count(models.ExpenseLog.id).label("count")
             )
             .where(
                 models.ExpenseLog.user_id == user_id,
                 extract('year', models.ExpenseLog.date) == year
-                models.ExpenseLog.date >= y_start,
-                models.ExpenseLog.date <= y_end
             )
             .group_by(extract('month', models.ExpenseLog.date))
-            .group_by(models.ExpenseLog.date)
         )
         month_rows = {int(r.m): {"total": float(r.total), "count": int(r.count)} for r in result.all()}
-        
-        month_totals: Dict[int, Dict[str, float]] = {m: {"total": 0.0, "count": 0} for m in range(1, 13)}
-        for r in result.all():
-            m = r.date.month
-            month_totals[m]["total"] += float(r.total)
-            month_totals[m]["count"] += int(r.count)
         
         points = []
         total_period = 0.0
         month_abbrs = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         for m in range(1, 13):
             data = month_rows.get(m, {"total": 0.0, "count": 0})
-            data = month_totals[m]
             points.append({
                 "label": month_abbrs[m - 1],
                 "date_key": f"{year}-{m:02d}",
@@ -264,7 +222,6 @@ async def calculate_trend_analytics(
         result = await db.execute(
             select(
                 extract('year', models.ExpenseLog.date).label("y"),
-                models.ExpenseLog.date,
                 func.sum(models.ExpenseLog.amount).label("total"),
                 func.count(models.ExpenseLog.id).label("count")
             )
@@ -272,29 +229,15 @@ async def calculate_trend_analytics(
                 models.ExpenseLog.user_id == user_id
             )
             .group_by(extract('year', models.ExpenseLog.date))
-            .group_by(models.ExpenseLog.date)
         )
         year_rows = {int(r.y): {"total": float(r.total), "count": int(r.count)} for r in result.all()}
         
         all_db_years = sorted(set(years + list(year_rows.keys())))
-        current_year = date.today().year
-        years = list(range(current_year - 4, current_year + 1))
-        
-        year_totals: Dict[int, Dict[str, float]] = {}
-        for r in result.all():
-            y = r.date.year
-            if y not in year_totals:
-                year_totals[y] = {"total": 0.0, "count": 0}
-            year_totals[y]["total"] += float(r.total)
-            year_totals[y]["count"] += int(r.count)
-            
-        all_db_years = sorted(set(years + list(year_totals.keys())))
         
         points = []
         total_period = 0.0
         for y in all_db_years:
             data = year_rows.get(y, {"total": 0.0, "count": 0})
-            data = year_totals.get(y, {"total": 0.0, "count": 0})
             points.append({
                 "label": f"{y}",
                 "date_key": f"{y}",
@@ -314,28 +257,14 @@ async def calculate_monthly_stats(user_id: int, year: int, month: int, db: Async
     result = await db.execute(
         select(models.ExpenseLog)
         .where(
-    start_date, end_date = get_month_date_range(year, month)
-    
-    # 1. Total spent & Transaction count using DB aggregation
-    tot_res = await db.execute(
-        select(
-            func.coalesce(func.sum(models.ExpenseLog.amount), 0.0),
-            func.count(models.ExpenseLog.id)
-        ).where(
             models.ExpenseLog.user_id == user_id,
             extract('year', models.ExpenseLog.date) == year,
             extract('month', models.ExpenseLog.date) == month
-            models.ExpenseLog.date >= start_date,
-            models.ExpenseLog.date <= end_date
         )
     )
     expenses = result.scalars().all()
-    tot_row = tot_res.one()
-    total_spent = float(tot_row[0])
-    tx_count = int(tot_row[1])
     
     if not expenses:
-    if tx_count == 0:
         return {
             "total_spent": 0.0,
             "transaction_count": 0,
@@ -348,64 +277,27 @@ async def calculate_monthly_stats(user_id: int, year: int, month: int, db: Async
     
     total_spent = sum(e.amount for e in expenses)
     num_days = calendar.monthrange(year, month)[1]
-    num_days = end_date.day
     avg_daily = total_spent / num_days
     
     highest_exp = max(expenses, key=lambda e: e.amount)
-    # 2. Highest expense query (1 row index lookup)
-    high_res = await db.execute(
-        select(models.ExpenseLog.amount, models.ExpenseLog.category, models.ExpenseLog.notes)
-        .where(
-            models.ExpenseLog.user_id == user_id,
-            models.ExpenseLog.date >= start_date,
-            models.ExpenseLog.date <= end_date
-        )
-        .order_by(desc(models.ExpenseLog.amount))
-        .limit(1)
-    )
-    high_row = high_res.first()
-    highest_amount = float(high_row[0]) if high_row else 0.0
-    highest_title = f"{high_row[1]} ({high_row[2] or 'Expense'})" if high_row else None
     
     cat_totals: Dict[str, float] = {}
     for e in expenses:
         cat_totals[e.category] = cat_totals.get(e.category, 0.0) + e.amount
-    # 3. Top category query (DB group by + index)
-    top_cat_res = await db.execute(
-        select(models.ExpenseLog.category, func.sum(models.ExpenseLog.amount).label("cat_total"))
-        .where(
-            models.ExpenseLog.user_id == user_id,
-            models.ExpenseLog.date >= start_date,
-            models.ExpenseLog.date <= end_date
-        )
-        .group_by(models.ExpenseLog.category)
-        .order_by(desc("cat_total"))
-        .limit(1)
-    )
-    top_cat_row = top_cat_res.first()
-    top_category = top_cat_row[0] if top_cat_row else None
-    top_category_amount = float(top_cat_row[1]) if top_cat_row else 0.0
     
     top_cat = max(cat_totals.items(), key=lambda x: x[1]) if cat_totals else (None, 0.0)
     
     return {
         "total_spent": round(total_spent, 2),
         "transaction_count": len(expenses),
-        "transaction_count": tx_count,
         "average_daily_spent": round(avg_daily, 2),
         "highest_expense_amount": round(highest_exp.amount, 2),
         "highest_expense_title": f"{highest_exp.category} ({highest_exp.notes or 'Expense'})",
         "top_category": top_cat[0],
         "top_category_amount": round(top_cat[1], 2)
-        "highest_expense_amount": round(highest_amount, 2),
-        "highest_expense_title": highest_title,
-        "top_category": top_category,
-        "top_category_amount": round(top_category_amount, 2)
     }
 
 async def get_month_daily_spending(user_id: int, year: int, month: int, db: AsyncSession) -> Dict[str, Any]:
-    start_date, end_date = get_month_date_range(year, month)
-    
     result = await db.execute(
         select(
             models.ExpenseLog.date,
@@ -415,8 +307,6 @@ async def get_month_daily_spending(user_id: int, year: int, month: int, db: Asyn
             models.ExpenseLog.user_id == user_id,
             extract('year', models.ExpenseLog.date) == year,
             extract('month', models.ExpenseLog.date) == month
-            models.ExpenseLog.date >= start_date,
-            models.ExpenseLog.date <= end_date
         )
         .group_by(models.ExpenseLog.date)
     )
@@ -432,44 +322,29 @@ async def get_month_daily_spending(user_id: int, year: int, month: int, db: Asyn
     }
 
 async def calculate_monthly_comparison(user_id: int, year: int, db: AsyncSession) -> Dict[str, Any]:
-    y_start, y_end = get_year_date_range(year)
-    
     # Query monthly budgets for all months of this year
     budget_res = await db.execute(
         select(models.MonthlyBudget).where(
-        select(models.MonthlyBudget.month, models.MonthlyBudget.amount).where(
             models.MonthlyBudget.user_id == user_id,
             models.MonthlyBudget.month.like(f"{year}-%")
         )
     )
     budgets = {b.month: b.amount for b in budget_res.scalars().all()}
-    budgets = {row[0]: float(row[1]) for row in budget_res.all()}
 
     # Query monthly spending and counts for this year
-    # Query monthly spending and counts for this year using index range scan
     spend_res = await db.execute(
         select(
             extract('month', models.ExpenseLog.date).label("month_num"),
-            models.ExpenseLog.date,
             func.sum(models.ExpenseLog.amount).label("total_spent"),
             func.count(models.ExpenseLog.id).label("tx_count")
         )
         .where(
             models.ExpenseLog.user_id == user_id,
             extract('year', models.ExpenseLog.date) == year
-            models.ExpenseLog.date >= y_start,
-            models.ExpenseLog.date <= y_end
         )
         .group_by(extract('month', models.ExpenseLog.date))
-        .group_by(models.ExpenseLog.date)
     )
     spending_by_month = {int(r.month_num): (float(r.total_spent), int(r.tx_count)) for r in spend_res.all()}
-    
-    spending_by_month: Dict[int, list] = {m: [0.0, 0] for m in range(1, 13)}
-    for r in spend_res.all():
-        m_num = r.date.month
-        spending_by_month[m_num][0] += float(r.total_spent)
-        spending_by_month[m_num][1] += int(r.tx_count)
 
     now = date.today()
     current_year = now.year
@@ -486,7 +361,6 @@ async def calculate_monthly_comparison(user_id: int, year: int, db: AsyncSession
     for m_idx, m_name in enumerate(month_names, start=1):
         m_key = f"{year}-{m_idx:02d}"
         spent, cnt = spending_by_month.get(m_idx, (0.0, 0))
-        spent, cnt = spending_by_month[m_idx]
         b_amt = budgets.get(m_key, 0.0)
         yearly_total += spent
 
@@ -519,4 +393,3 @@ async def calculate_monthly_comparison(user_id: int, year: int, db: AsyncSession
         "peak_amount": round(max_spent, 2),
         "months": months_data
     }
-

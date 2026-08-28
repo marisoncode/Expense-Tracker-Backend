@@ -1,4 +1,3 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, Enum
 from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, Enum, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -25,7 +24,6 @@ class ExpenseLog(Base):
     __tablename__ = "expense_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     date = Column(Date, index=True)
     amount = Column(Float, nullable=False)
@@ -45,7 +43,6 @@ class MonthlyBudget(Base):
     __tablename__ = "monthly_budgets"
     
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     month = Column(String, index=True) # Format: YYYY-MM
     amount = Column(Float, default=0.0)

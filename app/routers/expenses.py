@@ -1,9 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import extract, desc, asc, or_
-from sqlalchemy import desc, asc, or_
 from typing import List, Optional
 from datetime import date, datetime
 import csv
@@ -17,9 +15,6 @@ from app.services.budget_service import (
     calculate_trend_analytics,
     calculate_budget_summary,
     calculate_monthly_comparison
-    calculate_monthly_comparison,
-    get_month_date_range,
-    get_year_date_range
 )
 from app.services.pdf_service import generate_expenses_pdf
 from app.services.telegram_service import send_transaction_alert
@@ -30,13 +25,6 @@ router = APIRouter(prefix="/api/v1/expenses", tags=["expenses"])
 async def create_expense(expense: schemas.ExpenseLogCreate, db: AsyncSession = Depends(get_db)):
     # Ensure user exists to satisfy PostgreSQL foreign key constraint
     user_res = await db.execute(select(models.User).where(models.User.id == expense.user_id))
-async def create_expense(
-    expense: schemas.ExpenseLogCreate,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
-):
-    # Ensure user exists to satisfy foreign key constraint
-    user_res = await db.execute(select(models.User.id).where(models.User.id == expense.user_id))
     if not user_res.scalar_one_or_none():
         user = models.User(
             id=expense.user_id,
@@ -54,11 +42,9 @@ async def create_expense(
     await db.refresh(db_expense)
 
     # Trigger Telegram Alert
-    # Trigger Telegram Alert in Background (Zero UI Blocking)
     try:
         b_summary = await calculate_budget_summary(db_expense.user_id, db_expense.date.year, db_expense.date.month, db)
         await send_transaction_alert({
-        alert_data = {
             "category": db_expense.category,
             "amount": db_expense.amount,
             "payment_method": db_expense.payment_method,
@@ -66,9 +52,6 @@ async def create_expense(
             "notes": db_expense.notes
         }, b_summary, action="created")
     except Exception as e:
-        }
-        background_tasks.add_task(send_transaction_alert, alert_data, b_summary, action="created")
-    except Exception:
         pass
 
     return db_expense
@@ -93,22 +76,14 @@ async def list_expenses(
     if month:
         try:
             y, m_num = map(int, month.split("-"))
-            m_start, m_end = get_month_date_range(y, m_num)
             query = query.where(
                 extract('year', models.ExpenseLog.date) == y,
                 extract('month', models.ExpenseLog.date) == m_num
-                models.ExpenseLog.date >= m_start,
-                models.ExpenseLog.date <= m_end
             )
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid month format, use YYYY-MM")
     elif year:
         query = query.where(extract('year', models.ExpenseLog.date) == year)
-        y_start, y_end = get_year_date_range(year)
-        query = query.where(
-            models.ExpenseLog.date >= y_start,
-            models.ExpenseLog.date <= y_end
-        )
 
     if category:
         query = query.where(models.ExpenseLog.category == category)
@@ -248,12 +223,9 @@ async def export_expenses_csv(
     if month:
         try:
             y, m_num = map(int, month.split("-"))
-            m_start, m_end = get_month_date_range(y, m_num)
             query = query.where(
                 extract('year', models.ExpenseLog.date) == y,
                 extract('month', models.ExpenseLog.date) == m_num
-                models.ExpenseLog.date >= m_start,
-                models.ExpenseLog.date <= m_end
             )
             month_dt = datetime(y, m_num, 1)
             file_base = f"{month_dt.strftime('%B_%Y')}_Statement"
@@ -267,8 +239,6 @@ async def export_expenses_csv(
             file_base = f"{start_date.strftime('%d_%b_%Y')}_to_{end_date.strftime('%d_%b_%Y')}_Statement"
     elif year:
         query = query.where(extract('year', models.ExpenseLog.date) == year)
-        y_start, y_end = get_year_date_range(year)
-        query = query.where(models.ExpenseLog.date >= y_start, models.ExpenseLog.date <= y_end)
         file_base = f"{year}_Statement"
 
     if category:
@@ -312,12 +282,9 @@ async def export_expenses_pdf(
     if month:
         try:
             y, m_num = map(int, month.split("-"))
-            m_start, m_end = get_month_date_range(y, m_num)
             query = query.where(
                 extract('year', models.ExpenseLog.date) == y,
                 extract('month', models.ExpenseLog.date) == m_num
-                models.ExpenseLog.date >= m_start,
-                models.ExpenseLog.date <= m_end
             )
             month_dt = datetime(y, m_num, 1)
             # Full month name and year: e.g. "August 2026"
@@ -339,8 +306,6 @@ async def export_expenses_pdf(
     elif year:
         query = query.where(extract('year', models.ExpenseLog.date) == year)
         # Whole year: e.g. "2026" or "2007"
-        y_start, y_end = get_year_date_range(year)
-        query = query.where(models.ExpenseLog.date >= y_start, models.ExpenseLog.date <= y_end)
         period_title = f"Year {year}"
         file_base = f"{year}_Statement"
         category_summary = await calculate_category_breakdown(user_id, "year", year, None, None, None, None, db)
@@ -382,7 +347,6 @@ async def get_expense(expense_id: int, db: AsyncSession = Depends(get_db)):
 async def update_expense(
     expense_id: int,
     expense_update: schemas.ExpenseLogUpdate,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(select(models.ExpenseLog).where(models.ExpenseLog.id == expense_id))
@@ -397,19 +361,15 @@ async def update_expense(
     await db.commit()
     await db.refresh(db_expense)
 
-    # Non-blocking Telegram alert
     try:
         b_summary = await calculate_budget_summary(db_expense.user_id, db_expense.date.year, db_expense.date.month, db)
         await send_transaction_alert({
-        alert_data = {
             "category": db_expense.category,
             "amount": db_expense.amount,
             "payment_method": db_expense.payment_method,
             "date": db_expense.date.strftime("%d %b %Y"),
             "notes": db_expense.notes
         }, b_summary, action="updated")
-        }
-        background_tasks.add_task(send_transaction_alert, alert_data, b_summary, action="updated")
     except Exception:
         pass
 
@@ -417,11 +377,6 @@ async def update_expense(
 
 @router.delete("/{expense_id}")
 async def delete_expense(expense_id: int, db: AsyncSession = Depends(get_db)):
-async def delete_expense(
-    expense_id: int,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
-):
     result = await db.execute(select(models.ExpenseLog).where(models.ExpenseLog.id == expense_id))
     db_expense = result.scalars().first()
     if not db_expense:
@@ -441,13 +396,10 @@ async def delete_expense(
     await db.delete(db_expense)
     await db.commit()
 
-    # Non-blocking Telegram alert
     try:
         b_summary = await calculate_budget_summary(user_id, exp_year, exp_month, db)
         await send_transaction_alert(deleted_info, b_summary, action="deleted")
-        background_tasks.add_task(send_transaction_alert, deleted_info, b_summary, action="deleted")
     except Exception:
         pass
 
     return {"message": "Expense deleted successfully", "id": expense_id}
-
