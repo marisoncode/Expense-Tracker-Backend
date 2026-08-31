@@ -139,13 +139,26 @@ async def send_transaction_alert(
 
 async def send_daily_digest(db: AsyncSession, target_date: Optional[date] = None, user_id: int = 1):
     """
-    Summarizes transactions for a given day (defaults to yesterday if run at 12:00 AM).
+    Summarizes transactions for a given day and attaches the official Daily PDF Statement!
     """
     import app.models as models
-    from app.services.budget_service import calculate_budget_summary
+    from app.services.budget_service import calculate_budget_summary, calculate_category_breakdown
+    from app.services.pdf_service import generate_expenses_pdf
+    from zoneinfo import ZoneInfo
+
+    tz_name = os.getenv("TIMEZONE", "Asia/Kolkata")
+    try:
+        local_tz = ZoneInfo(tz_name)
+        now_local = datetime.now(local_tz)
+    except Exception:
+        now_local = datetime.now()
 
     if target_date is None:
-        target_date = date.today() - timedelta(days=1)
+        # If triggered late night (>= 21:00 / 9 PM), summarize today. If early morning (< 6 AM), summarize yesterday.
+        if now_local.hour >= 21:
+            target_date = now_local.date()
+        else:
+            target_date = now_local.date() - timedelta(days=1)
 
     result = await db.execute(
         select(models.ExpenseLog)
@@ -159,18 +172,28 @@ async def send_daily_digest(db: AsyncSession, target_date: Optional[date] = None
     message = f"🌙 <b>Daily Spending Digest</b>\n"
     message += f"📅 <b>{date_str}</b>\n\n"
 
+    b_summary = await calculate_budget_summary(user_id, target_date.year, target_date.month, db)
+
     if not expenses:
         message += "🎉 <b>Zero expenses recorded today!</b> Great job saving.\n"
-    else:
-        message += f"💰 <b>Total Spent Today:</b> <b>₹{total_spent:,.2f}</b> across {len(expenses)} transactions\n\n"
-        message += "<b>Itemized Transactions:</b>\n"
-        for idx, exp in enumerate(expenses, 1):
-            emoji = get_category_emoji(exp.category)
-            notes = f" - <i>{exp.notes}</i>" if exp.notes else ""
-            message += f"{idx}. {emoji} {exp.category}: <b>₹{exp.amount:,.2f}</b> ({exp.payment_method or 'UPI'}){notes}\n"
+        if b_summary and b_summary.get("total_budget", 0) > 0:
+            message += f"\n📊 <b>Month Progress ({target_date.strftime('%B %Y')}):</b>\n"
+            message += f"Spent ₹{b_summary['total_spent']:,.2f} of ₹{b_summary['total_budget']:,.2f} ({b_summary['spent_percentage']}%)\n"
+            if b_summary["is_over_budget"]:
+                message += f"⚠️ <b>Over budget by ₹{b_summary['negative_balance']:,.2f}</b>"
+            else:
+                message += f"✅ <b>₹{b_summary['remaining_budget']:,.2f} Remaining</b>"
+        await send_telegram_message(message)
+        return
+
+    message += f"💰 <b>Total Spent Today:</b> <b>₹{total_spent:,.2f}</b> across {len(expenses)} transactions\n\n"
+    message += "<b>Itemized Transactions:</b>\n"
+    for idx, exp in enumerate(expenses, 1):
+        emoji = get_category_emoji(exp.category)
+        notes = f" - <i>{exp.notes}</i>" if exp.notes else ""
+        message += f"{idx}. {emoji} {exp.category}: <b>₹{exp.amount:,.2f}</b> ({exp.payment_method or 'UPI'}){notes}\n"
 
     # Add monthly progress
-    b_summary = await calculate_budget_summary(user_id, target_date.year, target_date.month, db)
     if b_summary and b_summary.get("total_budget", 0) > 0:
         message += f"\n📊 <b>Month Progress ({target_date.strftime('%B %Y')}):</b>\n"
         message += f"Spent ₹{b_summary['total_spent']:,.2f} of ₹{b_summary['total_budget']:,.2f} ({b_summary['spent_percentage']}%)\n"
@@ -179,7 +202,28 @@ async def send_daily_digest(db: AsyncSession, target_date: Optional[date] = None
         else:
             message += f"✅ <b>₹{b_summary['remaining_budget']:,.2f} Remaining</b>"
 
-    await send_telegram_message(message)
+    message += f"\n\n📄 <i>Your official {date_str} Daily Statement PDF is attached below:</i>"
+
+    # Generate and attach Daily PDF Statement
+    try:
+        cat_summary = await calculate_category_breakdown(user_id, "day", None, None, None, None, target_date, db)
+        pdf_bytes = generate_expenses_pdf(
+            expenses=expenses,
+            period_title=f"Daily Statement - {target_date.strftime('%d %B %Y')}",
+            budget_summary=b_summary,
+            category_summary=cat_summary
+        )
+        pdf_filename = f"Daily_Statement_{target_date.strftime('%Y_%m_%d')}.pdf"
+        await send_telegram_document(
+            pdf_bytes=pdf_bytes,
+            filename=pdf_filename,
+            caption=message
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate daily PDF statement: {e}")
+        # Fallback to sending text message if PDF generation hits an issue
+        await send_telegram_message(message)
+
 
 async def send_monthly_digest(db: AsyncSession, year: Optional[int] = None, month: Optional[int] = None, user_id: int = 1):
     """
