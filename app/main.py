@@ -59,10 +59,15 @@ app.include_router(budget.router)
 app.include_router(calendar.router)
 app.include_router(notifications.router)
 
-@app.get("/")
-def read_root():
+@app.api_route("/", methods=["GET", "POST", "HEAD"])
+@app.api_route("/health", methods=["GET", "POST", "HEAD"])
+@app.api_route("/api/v1", methods=["GET", "POST", "HEAD"])
+@app.api_route("/api/v1/health", methods=["GET", "POST", "HEAD"])
+@app.api_route("/ping", methods=["GET", "POST", "HEAD"])
+def health_check():
     return {
         "app": "SpendWise - Expense & Budget Tracker API",
         "status": "healthy",
         "version": "2.0.0"
     }
+
