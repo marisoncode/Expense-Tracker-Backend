@@ -23,6 +23,8 @@ CATEGORY_EMOJIS = {
     "Dress": "👗",
     "Accessories": "🕶️",
     "Cinema": "🎬",
+    "Mobile Recharges": "📱",
+    "Snacks": "🍿",
     "Other Expenses": "📦"
 }
 
